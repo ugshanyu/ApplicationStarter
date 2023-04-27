@@ -14,19 +14,20 @@ using SharpCompress.Archives.Rar;
 using SharpCompress.Common;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Net.Http;
 
 using SharpCompress.Archives;
 using SharpCompress.Readers;
 using System.IO;
 
 
-Console.WriteLine("Hello, World!");
-
 async Task Main(string[] args)
 {
     AddToStartup();
+    Console.OutputEncoding = System.Text.Encoding.UTF8;
     string baseUrl = "http://localhost:8081";
     //string baseUrl = "http://202.180.218.84/";
+    Console.WriteLine("Хандах хаяг: " + baseUrl);
     string appFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "AppFolder");
     try {
         String uniqueId;
@@ -34,6 +35,7 @@ async Task Main(string[] args)
         {
             uniqueId = key.GetValue("MachineGuid").ToString();
         }
+        Console.WriteLine("ID: " + uniqueId);
         string manifestFilePath = FindApplicationFile(appFolderPath);
         string clickOnceApplicationVersion = GetClickOnceApplicationVersion(manifestFilePath);
         var client = new HttpClient();
@@ -59,7 +61,6 @@ async Task Main(string[] args)
     RunApplicationManifest(appFolderPath);
 }
 
-
 async Task<String> GetTokenTo(HttpClient client, String baseUrl, String uniqueId)
 {
     String responseString = "";
@@ -77,6 +78,7 @@ async Task<String> GetTokenTo(HttpClient client, String baseUrl, String uniqueId
     if (response.IsSuccessStatusCode)
     {
         responseString = await response.Content.ReadAsStringAsync();
+        Console.WriteLine("Сервэртэй амжилтай холбогдож токен авлаа");
     }
     else
     {
@@ -129,17 +131,18 @@ static async Task<bool> ShouldUpdateAsync(HttpClient client, string baseUrl, str
         if (response.IsSuccessStatusCode)
         {
             string shouldUpdate = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"Шинэ хувилбар татах эсэх: {shouldUpdate != "false"}");
             return shouldUpdate != "false";
         }
         else
         {
-            Console.WriteLine($"Error: {response.StatusCode}");
+            Console.WriteLine($"Алдаа ShouldUpdateAsync: {response.StatusCode}");
             return true;
         }
     }
     catch (Exception e)
     {
-        Console.WriteLine($"Error: {e.Message}");
+        Console.WriteLine($"Алдаа ShouldUpdateAsync: {e.Message}");
         return false;
     }
 }
@@ -154,13 +157,69 @@ static async Task<bool> CheckUpdate(HttpClient client, string url, string curren
     return true;
 }
 
-static async Task<string> DownloadAppAsync(HttpClient client, string baseUrl)
+//static async Task<string> DownloadAppAsync(HttpClient client, string baseUrl)
+//{
+//    string url = baseUrl + "/manage-api/v1/version/download_latest";
+//    string zipFilePath = Path.Combine(Path.GetTempPath(), "app.zip");
+//    using var response = await client.GetAsync(url);
+//    if (response.IsSuccessStatusCode)
+//    {
+//        using var fileStream = new FileStream(zipFilePath, FileMode.Create, FileAccess.Write, FileShare.None);
+//        await response.Content.CopyToAsync(fileStream);
+//    }
+//    else
+//    {
+//        Console.WriteLine($"Алдаа DownloadAppAsync: {response.StatusCode}");
+//        return null;
+//    }
+//    return zipFilePath;
+//}
+
+
+
+static async Task<string> DownloadAppAsync(HttpClient clientt, string baseUrl)
 {
     string url = baseUrl + "/manage-api/v1/version/download_latest";
     string zipFilePath = Path.Combine(Path.GetTempPath(), "app.zip");
 
+    using (var client = new HttpClientDownloadWithProgress(url, zipFilePath))
+    {
+        client.ProgressChanged += (totalFileSize, totalBytesDownloaded, progressPercentage) => {
+            Console.SetCursorPosition(0, Console.CursorTop);
+            Console.Write(new string(' ', Console.BufferWidth)); // Clear the current line
+            Console.SetCursorPosition(0, Console.CursorTop); // Reset the cursor position
+
+            if (totalFileSize.HasValue)
+            {
+                //Console.Write($"{progressPercentage}%");
+                Console.Write($"{progressPercentage}% ({totalBytesDownloaded}/{totalFileSize})");
+            }
+            else
+            {
+                Console.Write($"Татаж байна... {totalBytesDownloaded} bytes");
+            }
+        };
+
+        await client.StartDownload();
+        Console.WriteLine("\nТаталт дууслаа."); // Print download complete message
+    }
+    return zipFilePath;
+}
+
+static async Task<string> DDownloadAppAsync(HttpClient client, string baseUrl)
+{
+    string url = baseUrl + "/manage-api/v1/version/download_latest";
+    string zipFilePath = Path.Combine(Path.GetTempPath(), "app.zip");
+
+    CancellationTokenSource cts = new CancellationTokenSource();
+    Task rotatingIndicatorTask = ShowRotatingIndicator(cts.Token);
+
     using var response = await client.GetAsync(url);
-    //check response if successful 
+
+    // Cancel the rotating indicator task and wait for it to complete
+    cts.Cancel();
+    await rotatingIndicatorTask;
+
     if (response.IsSuccessStatusCode)
     {
         using var fileStream = new FileStream(zipFilePath, FileMode.Create, FileAccess.Write, FileShare.None);
@@ -168,12 +227,39 @@ static async Task<string> DownloadAppAsync(HttpClient client, string baseUrl)
     }
     else
     {
+        Console.WriteLine($"Алдаа DownloadAppAsync: {response.StatusCode}");
         return null;
     }
-    
-
     return zipFilePath;
 }
+
+static async Task ShowRotatingIndicator(CancellationToken cancellationToken)
+{
+    char[] sequence = new char[] { '|', '/', '-', '\\' };
+    int counter = 0;
+
+    Console.Write("Downloading ");
+
+    while (!cancellationToken.IsCancellationRequested)
+    {
+        Console.Write(sequence[counter]);
+        counter = (counter + 1) % sequence.Length;
+        await Task.Delay(100);
+        Console.SetCursorPosition(Console.CursorLeft - 1, Console.CursorTop);
+    }
+
+    Console.WriteLine();
+}
+
+
+
+//static void ReportProgress(HttpProgress progress)
+//{
+//    if (progress.TotalBytesToReceive.HasValue)
+//    {
+//        Console.WriteLine($"Download progress: {progress.BytesReceived * 100 / progress.TotalBytesToReceive.Value}%");
+//    }
+//}
 
 
 static void GrantWriteAccess(string directoryPath, string userOrGroupName)
@@ -273,6 +359,7 @@ static void DecompressApp(string zipFilePath, string appFolderPath)
 
     // Extract the contents of the zip file to the appFolderPath
     ZipFile.ExtractToDirectory(zipFilePath, appFolderPath);
+    Console.WriteLine("Шинэ хувилбарыг амжилттай татаж задаллаа");
 }
 
 //static void RunApplicationManifest(string manifestFilePath)
@@ -333,11 +420,13 @@ static void RunApplicationManifest(string appFolderPath)
         process.WaitForExit();
 
         System.IO.File.Delete(tempBatchFilePath);
+        //write me a method that prints current weather
     }
     catch (Exception ex)
     {
         Console.WriteLine($"Error: {ex.Message}");
     }
+    Console.ReadLine();
 }
 
 static string FindApplicationFile(string appFolderPath)
@@ -401,3 +490,90 @@ static void AddToStartup()
 // Add all the other methods as provided before, but without the "private" access modifier
 
 await Main(args);
+
+
+public class HttpClientDownloadWithProgress : IDisposable
+{
+    private readonly string _downloadUrl;
+    private readonly string _destinationFilePath;
+
+    private HttpClient _httpClient;
+
+    public delegate void ProgressChangedHandler(long? totalFileSize, long totalBytesDownloaded, double? progressPercentage);
+
+    public event ProgressChangedHandler ProgressChanged;
+
+    public HttpClientDownloadWithProgress(string downloadUrl, string destinationFilePath)
+    {
+        _downloadUrl = downloadUrl;
+        _destinationFilePath = destinationFilePath;
+    }
+
+    public async Task StartDownload()
+    {
+        _httpClient = new HttpClient { Timeout = TimeSpan.FromDays(1) };
+
+        using (var response = await _httpClient.GetAsync(_downloadUrl, HttpCompletionOption.ResponseHeadersRead))
+            await DownloadFileFromHttpResponseMessage(response);
+    }
+
+    private async Task DownloadFileFromHttpResponseMessage(HttpResponseMessage response)
+    {
+        response.EnsureSuccessStatusCode();
+
+        var totalBytes = response.Content.Headers.ContentLength;
+        //Console.WriteLine($"Total bytes: {totalBytes}");
+
+        using (var contentStream = await response.Content.ReadAsStreamAsync())
+            await ProcessContentStream(totalBytes, contentStream);
+    }
+
+    private async Task ProcessContentStream(long? totalDownloadSize, Stream contentStream)
+    {
+        var totalBytesRead = 0L;
+        var readCount = 0L;
+        var buffer = new byte[8192];
+        var isMoreToRead = true;
+
+        using (var fileStream = new FileStream(_destinationFilePath, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true))
+        {
+            do
+            {
+                var bytesRead = await contentStream.ReadAsync(buffer, 0, buffer.Length);
+                if (bytesRead == 0)
+                {
+                    isMoreToRead = false;
+                    TriggerProgressChanged(totalDownloadSize, totalBytesRead);
+                    continue;
+                }
+
+                await fileStream.WriteAsync(buffer, 0, bytesRead);
+
+                totalBytesRead += bytesRead;
+                readCount += 1;
+
+                if (readCount % 100 == 0)
+                    TriggerProgressChanged(totalDownloadSize, totalBytesRead);
+            }
+            while (isMoreToRead);
+        }
+    }
+
+    private void TriggerProgressChanged(long? totalDownloadSize, long totalBytesRead)
+    {
+        if (ProgressChanged == null)
+            return;
+
+        double? progressPercentage = null;
+        if (totalDownloadSize.HasValue)
+
+            progressPercentage = Math.Round((double)totalBytesRead / totalDownloadSize.Value * 100, 2);
+
+        ProgressChanged(totalDownloadSize, totalBytesRead, progressPercentage);
+    }
+
+    public void Dispose()
+    {
+        _httpClient?.Dispose();
+    }
+}
