@@ -19,21 +19,22 @@ using System.Net.Http;
 using SharpCompress.Archives;
 using SharpCompress.Readers;
 using System.IO;
-
+using System.Management;
+using System.Security.Cryptography;
 
 async Task Main(string[] args)
 {
     AddToStartup();
     Console.OutputEncoding = System.Text.Encoding.UTF8;
-    string baseUrl = "http://localhost:8081";
-    //string baseUrl = "http://202.180.218.84/";
+    //string baseUrl = "http://localhost:8081";
+    string baseUrl = "http://202.180.218.84/";
     Console.WriteLine("Хандах хаяг: " + baseUrl);
     string appFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "AppFolder");
     try {
         String uniqueId;
         using (RegistryKey key = Registry.LocalMachine.OpenSubKey("SOFTWARE\\Microsoft\\Cryptography"))
         {
-            uniqueId = key.GetValue("MachineGuid").ToString();
+            uniqueId = GetUniqueDeviceId();
         }
         Console.WriteLine("ID: " + uniqueId);
         string manifestFilePath = FindApplicationFile(appFolderPath);
@@ -131,6 +132,7 @@ static async Task<bool> ShouldUpdateAsync(HttpClient client, string baseUrl, str
         if (response.IsSuccessStatusCode)
         {
             string shouldUpdate = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"Одоогийн хувилбар: {version}");
             Console.WriteLine($"Шинэ хувилбар татах эсэх: {shouldUpdate != "false"}");
             return shouldUpdate != "false";
         }
@@ -157,24 +159,55 @@ static async Task<bool> CheckUpdate(HttpClient client, string url, string curren
     return true;
 }
 
-//static async Task<string> DownloadAppAsync(HttpClient client, string baseUrl)
-//{
-//    string url = baseUrl + "/manage-api/v1/version/download_latest";
-//    string zipFilePath = Path.Combine(Path.GetTempPath(), "app.zip");
-//    using var response = await client.GetAsync(url);
-//    if (response.IsSuccessStatusCode)
-//    {
-//        using var fileStream = new FileStream(zipFilePath, FileMode.Create, FileAccess.Write, FileShare.None);
-//        await response.Content.CopyToAsync(fileStream);
-//    }
-//    else
-//    {
-//        Console.WriteLine($"Алдаа DownloadAppAsync: {response.StatusCode}");
-//        return null;
-//    }
-//    return zipFilePath;
-//}
+static string GetUniqueDeviceId()
+{
+    StringBuilder sb = new StringBuilder();
 
+    try
+    {
+        // Get processor ID
+        using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT ProcessorId FROM Win32_Processor"))
+        {
+            foreach (ManagementObject queryObj in searcher.Get())
+            {
+                sb.Append(queryObj["ProcessorId"]);
+                break;
+            }
+        }
+
+        // Get motherboard serial number
+        using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT SerialNumber FROM Win32_BaseBoard"))
+        {
+            foreach (ManagementObject queryObj in searcher.Get())
+            {
+                sb.Append(queryObj["SerialNumber"]);
+                break;
+            }
+        }
+
+        // Get primary disk serial number
+        using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT SerialNumber FROM Win32_DiskDrive"))
+        {
+            foreach (ManagementObject queryObj in searcher.Get())
+            {
+                sb.Append(queryObj["SerialNumber"]);
+                break;
+            }
+        }
+
+        // Hash the combined string to create a unique identifier
+        using (SHA256 sha256 = SHA256.Create())
+        {
+            byte[] hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString()));
+            return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine("Error: " + ex.Message);
+        return string.Empty;
+    }
+}
 
 
 static async Task<string> DownloadAppAsync(HttpClient clientt, string baseUrl)
