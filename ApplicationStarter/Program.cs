@@ -26,8 +26,8 @@ async Task Main(string[] args)
 {
     AddToStartup();
     Console.OutputEncoding = System.Text.Encoding.UTF8;
-    //string baseUrl = "http://localhost:8081";
-    string baseUrl = "http://202.180.218.84/";
+    string baseUrl = "http://localhost:8081";
+    //string baseUrl = "http://qos.speedtest.mn/";
     Console.WriteLine("Хандах хаяг: " + baseUrl);
     string appFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "AppFolder");
     try {
@@ -79,7 +79,7 @@ async Task<String> GetTokenTo(HttpClient client, String baseUrl, String uniqueId
     if (response.IsSuccessStatusCode)
     {
         responseString = await response.Content.ReadAsStringAsync();
-        Console.WriteLine("Сервэртэй амжилтай холбогдож токен авлаа");
+        Console.WriteLine("Сервертэй амжилттай холбогдож токен авлаа");
     }
     else
     {
@@ -392,7 +392,7 @@ static void DecompressApp(string zipFilePath, string appFolderPath)
 
     // Extract the contents of the zip file to the appFolderPath
     ZipFile.ExtractToDirectory(zipFilePath, appFolderPath);
-    Console.WriteLine("Шинэ хувилбарыг амжилттай татаж задаллаа");
+    Console.WriteLine("Шинэ хувилбарыг амжилттай татаж суулгалаа");
 }
 
 //static void RunApplicationManifest(string manifestFilePath)
