@@ -21,16 +21,22 @@ using SharpCompress.Readers;
 using System.IO;
 using System.Management;
 using System.Security.Cryptography;
+using System.Net.Sockets;
+using System.Net;
 
 async Task Main(string[] args)
 {
     AddToStartup();
     Console.OutputEncoding = System.Text.Encoding.UTF8;
-    string baseUrl = "http://localhost:8081";
-    //string baseUrl = "http://qos.speedtest.mn/";
-    Console.WriteLine("Хандах хаяг: " + baseUrl);
+    //string baseUrl = "http://localhost:8081/manage-internet-api";
+    string baseUrl = "https://qos.speedtest.mn/manage-internet-api";
+
+    SetSystemDateTime(GetNetworkTime());
+    Console.WriteLine("Хандах Хаяг: " + baseUrl);
+
     string appFolderPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "AppFolder");
-    try {
+    try
+    {
         String uniqueId;
         using (RegistryKey key = Registry.LocalMachine.OpenSubKey("SOFTWARE\\Microsoft\\Cryptography"))
         {
@@ -58,9 +64,78 @@ async Task Main(string[] args)
     {
         Console.WriteLine("Error" + ex.ToString());
     }
-    
+
     RunApplicationManifest(appFolderPath);
 }
+
+
+static DateTime GetNetworkTime()
+{
+    //default Windows time server
+    const string ntpServer = "time.windows.com";
+
+    // NTP message size - 16 bytes of the digest (RFC 2030)
+    var ntpData = new byte[48];
+
+    //Setting the Leap Indicator, Version Number and Mode values
+    ntpData[0] = 0x1B; //LI = 0 (no warning), VN = 3 (IPv4 only), Mode = 3 (Client Mode)
+
+    var addresses = Dns.GetHostEntry(ntpServer).AddressList;
+
+    //The UDP port number assigned to NTP is 123
+    var ipEndPoint = new IPEndPoint(addresses[0], 123);
+    //NTP uses UDP
+
+    using (var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp))
+    {
+        socket.Connect(ipEndPoint);
+
+        //Stops code hang if NTP is blocked
+        socket.ReceiveTimeout = 3000;
+
+        socket.Send(ntpData);
+        socket.Receive(ntpData);
+        socket.Close();
+    }
+
+    //Offset to get to the "Transmit Timestamp" field (time at which the reply 
+    //departed the server for the client, in 64-bit timestamp format."
+    const byte serverReplyTime = 40;
+
+    //Get the seconds part
+    ulong intPart = BitConverter.ToUInt32(ntpData, serverReplyTime);
+
+    //Get the seconds fraction
+    ulong fractPart = BitConverter.ToUInt32(ntpData, serverReplyTime + 4);
+
+    //Convert From big-endian to little-endian
+    intPart = SwapEndianness(intPart);
+    fractPart = SwapEndianness(fractPart);
+
+    var milliseconds = (intPart * 1000) + ((fractPart * 1000) / 0x100000000L);
+
+    //**UTC** time
+    var networkDateTime = (new DateTime(1900, 1, 1, 0, 0, 0, DateTimeKind.Utc)).AddMilliseconds((long)milliseconds);
+
+    return networkDateTime.ToLocalTime();
+}
+
+// stackoverflow.com/a/3294698/162671
+static uint SwapEndianness(ulong x)
+{
+    return (uint)(((x & 0x000000ff) << 24) +
+                   ((x & 0x0000ff00) << 8) +
+                   ((x & 0x00ff0000) >> 8) +
+                   ((x & 0xff000000) >> 24));
+}
+
+
+void SetSystemDateTime(DateTime dt)
+{
+    string psCommand = $"Set-Date -Date '{dt.ToString("yyyy-MM-dd HH:mm:ss")}'";
+    Process.Start("powershell", psCommand);
+}
+
 
 async Task<String> GetTokenTo(HttpClient client, String baseUrl, String uniqueId)
 {
@@ -74,7 +149,7 @@ async Task<String> GetTokenTo(HttpClient client, String baseUrl, String uniqueId
 
     var json = JsonConvert.SerializeObject(obj);
     var content = new StringContent(json, Encoding.UTF8, "application/json");
-    var response = await client.PostAsync($"{baseUrl}/manage-api/v1/recordApi/login", content);
+    var response = await client.PostAsync($"{baseUrl}/v1/recordApi/login", content);
     //if response is success then get token if not then log error and try again after 1 plus minute from last try
     if (response.IsSuccessStatusCode)
     {
@@ -98,7 +173,7 @@ static async Task<string> GetLatestVersionAsync(HttpClient client, string baseUr
 {
     try
     {
-        string url = baseUrl + "/manage-api/v1/version/name";
+        string url = baseUrl + "/v1/version/name";
         HttpResponseMessage response = await client.GetAsync(url);
 
         if (response.IsSuccessStatusCode)
@@ -124,7 +199,7 @@ static async Task<bool> ShouldUpdateAsync(HttpClient client, string baseUrl, str
 {
     try
     {
-        string url = baseUrl + "/manage-api/v1/version/should-update";
+        string url = baseUrl + "/v1/version/should-update";
         string urlWithVersion = $"{url}?version={version}&deviceCode={deviceCode}";
 
         HttpResponseMessage response = await client.GetAsync(urlWithVersion);
@@ -210,21 +285,39 @@ static string GetUniqueDeviceId()
 }
 
 
-static async Task<string> DownloadAppAsync(HttpClient clientt, string baseUrl)
+static async Task<string> DownloadAppAsync(HttpClient client, string baseUrl)
 {
-    string url = baseUrl + "/manage-api/v1/version/download_latest";
+    string fetchUrlEndpoint = baseUrl + "/v1/version/download_latest";
+
+    // First, fetch the file's URL from the endpoint
+    HttpResponseMessage response = await client.GetAsync(fetchUrlEndpoint);
+
+    if (!response.IsSuccessStatusCode)
+    {
+        Console.WriteLine("Failed to fetch the file's URL.");
+        return null;
+    }
+
+    // Assuming the endpoint returns the URL directly as a string.
+    string actualFileUrl = await response.Content.ReadAsStringAsync();
+
+    // If there's more structure to the returned data, you might need to parse it (e.g., using JSON serialization).
+    // For instance:
+    // var responseObject = JsonConvert.DeserializeObject<MyResponseType>(responseContent);
+    // string actualFileUrl = responseObject.fileUrl;
+
     string zipFilePath = Path.Combine(Path.GetTempPath(), "app.zip");
 
-    using (var client = new HttpClientDownloadWithProgress(url, zipFilePath))
+    using (var downloadClient = new HttpClientDownloadWithProgress(actualFileUrl, zipFilePath))
     {
-        client.ProgressChanged += (totalFileSize, totalBytesDownloaded, progressPercentage) => {
+        downloadClient.ProgressChanged += (totalFileSize, totalBytesDownloaded, progressPercentage) =>
+        {
             Console.SetCursorPosition(0, Console.CursorTop);
             Console.Write(new string(' ', Console.BufferWidth)); // Clear the current line
             Console.SetCursorPosition(0, Console.CursorTop); // Reset the cursor position
 
             if (totalFileSize.HasValue)
             {
-                //Console.Write($"{progressPercentage}%");
                 Console.Write($"{progressPercentage}% ({totalBytesDownloaded}/{totalFileSize})");
             }
             else
@@ -233,38 +326,44 @@ static async Task<string> DownloadAppAsync(HttpClient clientt, string baseUrl)
             }
         };
 
-        await client.StartDownload();
+        await downloadClient.StartDownload();
         Console.WriteLine("\nТаталт дууслаа."); // Print download complete message
     }
+
     return zipFilePath;
 }
 
-static async Task<string> DDownloadAppAsync(HttpClient client, string baseUrl)
-{
-    string url = baseUrl + "/manage-api/v1/version/download_latest";
-    string zipFilePath = Path.Combine(Path.GetTempPath(), "app.zip");
 
-    CancellationTokenSource cts = new CancellationTokenSource();
-    Task rotatingIndicatorTask = ShowRotatingIndicator(cts.Token);
 
-    using var response = await client.GetAsync(url);
+//static async Task<string> DownloadAppAsync(HttpClient clientt, string baseUrl)
+//{
+//    string url = baseUrl + "/v1/version/download_latest";
+//    //string url = "http://203.26.188.188/files/internetMeasurement/z49swavyd7d/64e577deb1e8755e309b3ba5.zip";
+//    string zipFilePath = Path.Combine(Path.GetTempPath(), "app.zip");
 
-    // Cancel the rotating indicator task and wait for it to complete
-    cts.Cancel();
-    await rotatingIndicatorTask;
+//    using (var client = new HttpClientDownloadWithProgress(url, zipFilePath))
+//    {
+//        client.ProgressChanged += (totalFileSize, totalBytesDownloaded, progressPercentage) => {
+//            Console.SetCursorPosition(0, Console.CursorTop);
+//            Console.Write(new string(' ', Console.BufferWidth)); // Clear the current line
+//            Console.SetCursorPosition(0, Console.CursorTop); // Reset the cursor position
 
-    if (response.IsSuccessStatusCode)
-    {
-        using var fileStream = new FileStream(zipFilePath, FileMode.Create, FileAccess.Write, FileShare.None);
-        await response.Content.CopyToAsync(fileStream);
-    }
-    else
-    {
-        Console.WriteLine($"Алдаа DownloadAppAsync: {response.StatusCode}");
-        return null;
-    }
-    return zipFilePath;
-}
+//            if (totalFileSize.HasValue)
+//            {
+//                //Console.Write($"{progressPercentage}%");
+//                Console.Write($"{progressPercentage}% ({totalBytesDownloaded}/{totalFileSize})");
+//            }
+//            else
+//            {
+//                Console.Write($"Татаж байна... {totalBytesDownloaded} bytes");
+//            }
+//        };
+
+//        await client.StartDownload();
+//        Console.WriteLine("\nТаталт дууслаа."); // Print download complete message
+//    }
+//    return zipFilePath;
+//}
 
 static async Task ShowRotatingIndicator(CancellationToken cancellationToken)
 {
